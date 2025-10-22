@@ -57,4 +57,3 @@ def update_user(
 
     user.save()
     return user
-

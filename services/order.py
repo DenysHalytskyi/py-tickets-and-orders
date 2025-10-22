@@ -1,27 +1,50 @@
 from django.db import transaction
-
+from django.db import IntegrityError
 from db.models import Order, Ticket, User, MovieSession
 from datetime import datetime
 
 
-def create_order(tickets: list[dict], username: str, date: datetime | None = None) -> Order:
-    with transaction.atomic():
-        user, _= User.objects.get_or_create(username=username)
+def create_order(tickets: list[dict], username: str,
+                 date: datetime | None = None) -> Order:
+    user, _ = User.objects.get_or_create(username=username)
 
-        if date:
-            order = Order.objects.create(user=user, created_at=date)
-        else:
-            order = Order.objects.create(user=user)
+    try:
+        with (transaction.atomic()):
+            if date:
+                order = Order.objects.create(user=user, created_at=date)
+            else:
+                order = Order.objects.create(user=user)
 
-        for tickets_data in tickets:
-            Ticket.objects.create(
-                movie_session_id=tickets_data["movie_session"],
-                order=order,
-                row=tickets_data["row"],
-                seats=tickets_data["seat"],
-            )
+            for ticket_data in tickets:
+                session_id = ticket_data["movie_session"]
+                row = ticket_data["row"]
+                seat = ticket_data["seat"]
+
+                movie_session = MovieSession.objects.select_for_update(
+                ).get(id=session_id)
+
+                if Ticket.objects.filter(movie_session=movie_session,
+                                         row=row,
+                                         seat=seat).exists():
+                    raise ValueError(f"Seat ({row}, {seat}) "
+                                     f"is already booked for "
+                                     f"session {session_id}.")
+
+                Ticket.objects.create(
+                    movie_session=movie_session,
+                    order=order,
+                    row=row,
+                    seat=seat
+                )
 
         return order
+
+    except IntegrityError as e:
+        raise ValueError("A ticket in the order caused a unique"
+                         " constraint violation (seat already booked).") from e
+    except MovieSession.DoesNotExist:
+        raise ValueError("One of the provided movie sessions does not exist.")
+
 
 def get_orders(username: str | None = None) -> list[Order]:
     if username:
